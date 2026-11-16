@@ -1,0 +1,208 @@
+package io.github.thatsfguy.meshcore.android.storage
+
+import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.net.Uri
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.room.Dao
+import androidx.room.Entity
+import androidx.room.PrimaryKey
+import androidx.room.Query
+import androidx.room.Upsert
+import io.github.thatsfguy.meshcore.custom.DiscordAvatarUrl
+import io.github.thatsfguy.meshcore.custom.ProfileCardCodec
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.withContext
+import java.io.ByteArrayOutputStream
+import java.io.File
+import java.net.HttpURLConnection
+import java.net.URL
+
+/**
+ * Local-only extra information about a contact (MeshCore Custom).
+ *
+ * Kept in its own table, keyed by the contact's public key, so the upstream
+ * `contacts` table is untouched. Nothing here is verified and nothing is sent anywhere:
+ * the Discord fields are labels the user typed, never an authenticated identity.
+ */
+@Entity(tableName = "contact_profiles")
+data class ContactProfileEntity(
+    @PrimaryKey val keyHex: String,
+    val discordUser: String?,
+    val discordId: String?,
+    val discordLink: String?,
+    val description: String?,
+    val notes: String?,
+    val label: String?,
+    val favourite: Boolean,
+    /** Name of the avatar file in the private avatars directory, or null. */
+    val avatarFile: String?,
+    val updatedAt: Long,
+)
+
+@Dao
+interface ContactProfileDao {
+    @Query("SELECT * FROM contact_profiles")
+    fun all(): Flow<List<ContactProfileEntity>>
+
+    @Query("SELECT * FROM contact_profiles WHERE keyHex = :keyHex")
+    suspend fun get(keyHex: String): ContactProfileEntity?
+
+    @Upsert
+    suspend fun upsert(profile: ContactProfileEntity)
+
+    @Query("DELETE FROM contact_profiles WHERE keyHex = :keyHex")
+    suspend fun delete(keyHex: String)
+}
+
+/** Why an avatar could not be set; shown to the user as is. */
+class AvatarException(message: String) : Exception(message)
+
+/**
+ * Reads and writes profiles and their pictures.
+ *
+ * Pictures are shrunk to 256×256 (centre-cropped) and stored as WebP in the app's private
+ * directory; originals are never kept. Android Auto Backup is off for this app, so they
+ * are not copied to a cloud. The files are not encrypted (only the database is).
+ */
+class ContactProfileStore(context: Context, private val dao: ContactProfileDao) {
+    private val appContext = context.applicationContext
+    private val dir = File(appContext.filesDir, "avatars")
+
+    val profiles: Flow<List<ContactProfileEntity>> = dao.all()
+
+    private val _images = MutableStateFlow<Map<String, ImageBitmap>>(emptyMap())
+    /** Decoded 128 px avatars by contact key, for list rows. */
+    val images: StateFlow<Map<String, ImageBitmap>> = _images
+
+    /** Reloads [images] from [list]; call whenever [profiles] emits. */
+    suspend fun refreshImages(list: List<ContactProfileEntity>) = withContext(Dispatchers.IO) {
+        val current = _images.value
+        val next = HashMap<String, ImageBitmap>()
+        for (p in list) {
+            val file = p.avatarFile ?: continue
+            // The file name embeds the update time, so a replaced picture reloads.
+            val cached = current[p.keyHex + "|" + file]
+            val bmp = cached ?: runCatching {
+                BitmapFactory.decodeFile(File(dir, file).path)?.let { Bitmap.createScaledBitmap(it, 128, 128, true) }
+                    ?.asImageBitmap()
+            }.getOrNull() ?: continue
+            next[p.keyHex + "|" + file] = bmp
+        }
+        // Expose by plain contact key as well, which is what the avatar composable looks up.
+        val byKey = HashMap<String, ImageBitmap>()
+        for (p in list) {
+            val file = p.avatarFile ?: continue
+            next[p.keyHex + "|" + file]?.let { byKey[p.keyHex] = it }
+        }
+        _images.value = byKey + next
+    }
+
+    suspend fun get(keyHex: String): ContactProfileEntity? = dao.get(keyHex)
+
+    suspend fun save(p: ContactProfileEntity) {
+        val clean = p.copy(
+            discordUser = p.discordUser?.trim()?.take(ProfileCardCodec.MAX_DISCORD_USER)?.ifEmpty { null },
+            discordId = p.discordId?.trim()?.takeIf(ProfileCardCodec::isDiscordId),
+            discordLink = p.discordLink?.trim()?.takeIf(ProfileCardCodec::isSafeDiscordLink),
+            description = p.description?.trim()?.take(ProfileCardCodec.MAX_DESCRIPTION)?.ifEmpty { null },
+            notes = p.notes?.trim()?.take(1000)?.ifEmpty { null },
+            label = p.label?.trim()?.take(24)?.ifEmpty { null },
+            updatedAt = System.currentTimeMillis(),
+        )
+        dao.upsert(clean)
+    }
+
+    suspend fun delete(keyHex: String) {
+        dao.get(keyHex)?.avatarFile?.let { withContext(Dispatchers.IO) { File(dir, it).delete() } }
+        dao.delete(keyHex)
+    }
+
+    /** Sets the picture from a document/photo picker [uri]. Throws [AvatarException]. */
+    suspend fun setAvatarFromUri(keyHex: String, uri: Uri) {
+        val bytes = withContext(Dispatchers.IO) {
+            appContext.contentResolver.openInputStream(uri)?.use { readLimited(it, MAX_IMAGE_BYTES) }
+        } ?: throw AvatarException("Could not read that image")
+        storeAvatar(keyHex, bytes)
+    }
+
+    /**
+     * Downloads the avatar from a pasted Discord CDN link. Only called after the user taps
+     * the button. Accepts nothing but `https://cdn.discordapp.com/avatars/...`; does not
+     * follow redirects; reads at most [MAX_IMAGE_BYTES].
+     */
+    suspend fun setAvatarFromDiscordLink(keyHex: String, link: String) {
+        val url = DiscordAvatarUrl.normalise(link)
+            ?: throw AvatarException("Not a Discord avatar link (cdn.discordapp.com/avatars/…)")
+        val bytes = withContext(Dispatchers.IO) {
+            val conn = URL(url).openConnection() as HttpURLConnection
+            try {
+                conn.instanceFollowRedirects = false
+                conn.connectTimeout = 10_000
+                conn.readTimeout = 10_000
+                conn.requestMethod = "GET"
+                if (conn.responseCode != 200) throw AvatarException("Discord answered ${conn.responseCode}")
+                conn.inputStream.use { readLimited(it, MAX_IMAGE_BYTES) }
+            } finally {
+                conn.disconnect()
+            }
+        }
+        storeAvatar(keyHex, bytes)
+    }
+
+    suspend fun removeAvatar(keyHex: String) {
+        val p = dao.get(keyHex) ?: return
+        p.avatarFile?.let { withContext(Dispatchers.IO) { File(dir, it).delete() } }
+        dao.upsert(p.copy(avatarFile = null, updatedAt = System.currentTimeMillis()))
+    }
+
+    private suspend fun storeAvatar(keyHex: String, bytes: ByteArray) {
+        val fileName = withContext(Dispatchers.IO) {
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+            if (bounds.outWidth <= 0 || bounds.outHeight <= 0) throw AvatarException("Not a readable image")
+            if (bounds.outWidth.toLong() * bounds.outHeight > 40_000_000L) throw AvatarException("Image is too large")
+            var sample = 1
+            while (bounds.outWidth / (sample * 2) >= TARGET && bounds.outHeight / (sample * 2) >= TARGET) sample *= 2
+            val opts = BitmapFactory.Options().apply { inSampleSize = sample }
+            val src = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
+                ?: throw AvatarException("Not a readable image")
+            val side = minOf(src.width, src.height)
+            val square = Bitmap.createBitmap(src, (src.width - side) / 2, (src.height - side) / 2, side, side)
+            val scaled = Bitmap.createScaledBitmap(square, TARGET, TARGET, true)
+            val out = ByteArrayOutputStream()
+            @Suppress("DEPRECATION")
+            scaled.compress(Bitmap.CompressFormat.WEBP, 85, out)
+            dir.mkdirs()
+            val name = "${keyHex.take(64)}-${System.currentTimeMillis()}.webp"
+            File(dir, name).writeBytes(out.toByteArray())
+            name
+        }
+        val existing = dao.get(keyHex)
+        existing?.avatarFile?.let { withContext(Dispatchers.IO) { File(dir, it).delete() } }
+        val base = existing ?: ContactProfileEntity(keyHex, null, null, null, null, null, null, false, null, 0L)
+        dao.upsert(base.copy(avatarFile = fileName, updatedAt = System.currentTimeMillis()))
+    }
+
+    private fun readLimited(input: java.io.InputStream, max: Int): ByteArray {
+        val out = ByteArrayOutputStream()
+        val buf = ByteArray(8192)
+        while (true) {
+            val n = input.read(buf)
+            if (n < 0) break
+            if (out.size() + n > max) throw AvatarException("Image is larger than ${max / 1_000_000} MB")
+            out.write(buf, 0, n)
+        }
+        return out.toByteArray()
+    }
+
+    private companion object {
+        const val TARGET = 256
+        const val MAX_IMAGE_BYTES = 8_000_000
+    }
+}

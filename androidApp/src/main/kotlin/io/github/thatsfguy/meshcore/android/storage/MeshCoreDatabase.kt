@@ -15,8 +15,9 @@ import java.io.File
     entities = [
         MessageEntity::class, ContactEntity::class, ChannelEntity::class,
         PathHistoryEntity::class, DiscoveredEntity::class, NeighbourEntity::class,
+        ContactProfileEntity::class,
     ],
-    version = 20,
+    version = 21,
     exportSchema = true,
 )
 abstract class MeshCoreDatabase : RoomDatabase() {
@@ -26,6 +27,7 @@ abstract class MeshCoreDatabase : RoomDatabase() {
     abstract fun paths(): PathHistoryDao
     abstract fun discovered(): DiscoveredDao
     abstract fun neighbours(): NeighbourDao
+    abstract fun profiles(): ContactProfileDao
 
     companion object {
         private const val TAG = "MeshCoreDb"
@@ -335,6 +337,19 @@ abstract class MeshCoreDatabase : RoomDatabase() {
             }
         }
 
+        /** v21 adds local contact profiles (MeshCore Custom). A new table only; no existing row is touched. */
+        private val MIGRATION_20_21 = object : Migration(20, 21) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `contact_profiles` (" +
+                        "`keyHex` TEXT NOT NULL, `discordUser` TEXT, `discordId` TEXT, " +
+                        "`discordLink` TEXT, `description` TEXT, `notes` TEXT, `label` TEXT, " +
+                        "`favourite` INTEGER NOT NULL, `avatarFile` TEXT, `updatedAt` INTEGER NOT NULL, " +
+                        "PRIMARY KEY(`keyHex`))",
+                )
+            }
+        }
+
         /**
          * Open the database, encrypted with [passphrase] when one is
          * available (see [DatabaseKey]). A pre-existing PLAINTEXT
@@ -383,6 +398,7 @@ abstract class MeshCoreDatabase : RoomDatabase() {
                         MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14,
                         MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17,
                         MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20,
+                        MIGRATION_20_21,
                     )
 
             if (key == null) {

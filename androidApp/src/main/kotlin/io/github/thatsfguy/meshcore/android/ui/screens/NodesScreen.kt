@@ -1195,6 +1195,7 @@ fun ContactDetailSheet(
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.primary,
             )
+            ContactProfileSummary(vm, contact.keyHex, contact.name)
             // First, because it is the question the sheet is opened for.
             vm.reachability.collectAsState().value[contact.keyHex]?.let {
                 Spacer(Modifier.height(4.dp))

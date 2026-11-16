@@ -8,6 +8,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.draw.clip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -21,6 +22,14 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.github.thatsfguy.meshcore.protocol.Codes
 import io.github.thatsfguy.meshcore.util.avatarColors
+
+/**
+ * Profile pictures by contact public key (MeshCore Custom). Provided once at the app root;
+ * [NodeAvatar] looks its `seed` up here, so every list that already shows a contact's
+ * avatar shows their picture too. Sender names in channel messages are deliberately NOT
+ * looked up: a name is unauthenticated text and must never borrow someone's picture.
+ */
+val LocalProfileImages = androidx.compose.runtime.staticCompositionLocalOf<Map<String, androidx.compose.ui.graphics.ImageBitmap>> { emptyMap() }
 
 /**
  * Hash-colored avatar circle for contacts and channels: the background
@@ -45,6 +54,19 @@ fun NodeAvatar(
      */
     channelKind: io.github.thatsfguy.meshcore.protocol.ChannelKind? = null,
 ) {
+    val photo = if (isChannel) null else LocalProfileImages.current[seed]
+    if (photo != null) {
+        androidx.compose.foundation.Image(
+            bitmap = photo,
+            contentDescription = null,
+            contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+            modifier = Modifier
+                .size(size)
+                .clip(CircleShape),
+        )
+        return
+    }
+
     // Infrastructure nodes reuse the MAP marker artwork (same colors +
     // glyphs) so a repeater looks identical in the list and on the map.
     if (type == Codes.ADV_TYPE_REPEATER ||

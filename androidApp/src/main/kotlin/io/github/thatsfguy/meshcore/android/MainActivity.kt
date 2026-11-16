@@ -78,6 +78,7 @@ import io.github.thatsfguy.meshcore.android.ui.screens.SettingsScreen
 import io.github.thatsfguy.meshcore.android.ui.screens.SettingsTransportsScreen
 import io.github.thatsfguy.meshcore.android.ui.screens.SetupScreen
 import io.github.thatsfguy.meshcore.android.ui.theme.MeshCoreTheme
+import io.github.thatsfguy.meshcore.android.ui.theme.ThemePalettes
 
 class MainActivity : ComponentActivity() {
 
@@ -118,13 +119,19 @@ class MainActivity : ComponentActivity() {
             val vm: MeshCoreViewModel = viewModel()
             val theme by vm.prefs.themeFlow.collectAsStateWithLifecycle()
             MeshCoreTheme(
+                palette = ThemePalettes.fromPref(theme),
                 darkTheme = when (theme) {
                     "dark" -> true
                     "light" -> false
                     else -> androidx.compose.foundation.isSystemInDarkTheme()
                 },
             ) {
-                AppShell(vm, openThread, incomingLink)
+                val profileImages by vm.profiles.images.collectAsStateWithLifecycle()
+                androidx.compose.runtime.CompositionLocalProvider(
+                    io.github.thatsfguy.meshcore.android.ui.screens.LocalProfileImages provides profileImages,
+                ) {
+                    AppShell(vm, openThread, incomingLink)
+                }
             }
         }
     }

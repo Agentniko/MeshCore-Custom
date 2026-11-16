@@ -126,9 +126,13 @@ internal val MeshCoreTypography = Typography()
 @Composable
 fun MeshCoreTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
+    palette: ThemePalette? = null,
     content: @Composable () -> Unit,
 ) {
-    val scheme = if (darkTheme) DarkColors else LightColors
+    // A selected palette decides both the colours and whether the system bars use
+    // light or dark icons; without one the two original schemes apply unchanged.
+    val dark = palette?.dark ?: darkTheme
+    val scheme = palette?.toColorScheme() ?: if (darkTheme) DarkColors else LightColors
     // Tint the system status + navigation bars to the app background so
     // they blend with the app instead of leaving a stray grey band at
     // the top. Light/dark bar-icon appearance follows the theme.
@@ -146,8 +150,8 @@ fun MeshCoreTheme(
             // background when Gboard pops up.
             window.setBackgroundDrawable(ColorDrawable(bg))
             WindowCompat.getInsetsController(window, view).apply {
-                isAppearanceLightStatusBars = !darkTheme
-                isAppearanceLightNavigationBars = !darkTheme
+                isAppearanceLightStatusBars = !dark
+                isAppearanceLightNavigationBars = !dark
             }
         }
     }

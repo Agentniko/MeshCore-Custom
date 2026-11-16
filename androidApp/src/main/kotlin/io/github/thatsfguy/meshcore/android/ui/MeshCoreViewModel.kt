@@ -140,6 +140,16 @@ class MeshCoreViewModel(app: Application) : AndroidViewModel(app) {
         },
     )
 
+    /** Local contact profiles (photo, Discord, notes) — MeshCore Custom. */
+    val profiles = io.github.thatsfguy.meshcore.android.storage.ContactProfileStore(app, db.profiles())
+    val profileMap: StateFlow<Map<String, io.github.thatsfguy.meshcore.android.storage.ContactProfileEntity>> =
+        profiles.profiles.map { list -> list.associateBy { it.keyHex } }
+            .stateIn(viewModelScope, SharingStarted.Eagerly, emptyMap())
+
+    init {
+        viewModelScope.launch { profiles.profiles.collect { profiles.refreshImages(it) } }
+    }
+
     private val _service = MutableStateFlow<MeshCoreService?>(null)
     val service: StateFlow<MeshCoreService?> = _service
 

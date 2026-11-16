@@ -1,5 +1,6 @@
 package io.github.thatsfguy.meshcore.android.ui.screens
 
+import io.github.thatsfguy.meshcore.android.ui.theme.ThemePalettes
 import androidx.activity.compose.rememberLauncherForActivityResult
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
@@ -745,6 +746,22 @@ internal fun AppearanceSection(vm: MeshCoreViewModel) {
         }
     }
     HintText("\"System\" follows the phone's light/dark setting.")
+
+    Spacer(Modifier.height(12.dp))
+    Text("Colour themes", style = MaterialTheme.typography.labelLarge)
+    ButtonFlowRow {
+        for (palette in ThemePalettes.all) {
+            val value = ThemePalettes.prefValue(palette)
+            OutlinedButton(
+                onClick = {
+                    theme = value
+                    vm.prefs.theme = value
+                },
+                enabled = theme != value,
+            ) { Text(palette.name) }
+        }
+    }
+    HintText("Palettes only; no artwork is bundled. Choosing one replaces System/Light/Dark.")
 
     Spacer(Modifier.height(16.dp))
     Text("Units", style = MaterialTheme.typography.labelLarge)
