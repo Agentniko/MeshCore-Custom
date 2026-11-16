@@ -24,3 +24,4 @@ Thumbs.db
 
 # Unredacted screenshot originals — never commit these
 docs/screenshots/raw/
+.android/
